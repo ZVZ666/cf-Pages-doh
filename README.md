@@ -25,3 +25,5 @@ curl -i -H "accept: application/dns-json" "https://你的域名/自定义后缀?
 
 部署在cloudflare Pages如果访问index.html等静态资源不消耗每日请求数 访问doh服务将会消耗每日请求数
 免费套餐每日请求数为10万，足够大多数个人使用
+不会部署
+[点击观看演示视频](https://www.bilibili.com/video/BV1fd896bEjC)
