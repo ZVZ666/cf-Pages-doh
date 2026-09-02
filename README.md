@@ -2,7 +2,7 @@
 cf-Pages-doh
 </h1>
 
-一个带有伪装可以部署在cloudflare Pages的DNS over HTTPS服务
+一个带有伪装可以部署在cloudflare Pages的DNS over HTTPS服务,支持自定义域名返回和去广告规则链接
 
 ### 有什么用
 
