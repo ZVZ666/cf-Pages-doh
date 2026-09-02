@@ -12,7 +12,7 @@ cf-Pages-doh
 
 注册一个Cloudflare账号 创建一个Pages 下载_worker.js和你自定义的index.html一起上传到Pages即可
 
-#### 自定义配置
+### 自定义配置
 
 在cloudflare Pages项目设置内添加变量并新建kv空间绑定到项目 `DNS_KV` KV 命名空间变量名
 | 变量名 | 示例 | 说明 |
