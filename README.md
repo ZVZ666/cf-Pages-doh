@@ -14,12 +14,7 @@ cf-Pages-doh
 
 #### 自定义配置
 
-新建kv空间并绑定到项目
-| 变量名 | 说明 |
-| :--- | :--- | :--- |
-| `DNS_KV` |  KV 命名空间变量名 |
-在cloudflare Pages项目设置内添加变量
-
+在cloudflare Pages项目设置内添加变量并新建kv空间绑定到项目 `DNS_KV` KV 命名空间变量名
 | 变量名 | 示例 | 说明 |
 | :--- | :--- | :--- |
 | `CUSTOM_DNS` | example.com 192.168.0.1,example.net 127.0.0.1 | 自定义解析,逗号分隔 |
