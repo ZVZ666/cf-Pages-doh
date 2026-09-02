@@ -17,8 +17,8 @@ cf-Pages-doh
 在cloudflare Pages项目设置内添加变量并新建kv空间绑定到项目 `DNS_KV` KV 命名空间变量名
 | 变量名 | 示例 | 说明 |
 | :--- | :--- | :--- |
-| `CUSTOM_DNS` | example.com 192.168.0.1,example.net 127.0.0.1 | 自定义解析,逗号分隔 |
-| `ADLIST_URLS` | https://example.com/all.txt,https://example.com/hosts.txt | 广告规则地址，逗号分隔 |
+| `CUSTOM_DNS` | example.com 192.168.0.1,example.net 127.0.0.1 | 自定义解析,逗号分隔（无需绑定kv空间） |
+| `ADLIST_URLS` | https://example.com/all.txt,https://example.com/hosts.txt | 广告规则地址，逗号分隔（需要kv空间） |
 | `BLOCK_IP` | 127.0.0.1 | 修改广告拦截返回ip（可以不配置），默认 0.0.0.0 |
 
 _worker.js默认doh请求路径是/dns-query 可在_worker.js内自行修改 默认上游dns为cloudflare的doh服务器
