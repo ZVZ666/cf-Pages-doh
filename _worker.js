@@ -28,7 +28,7 @@ const RETRY_MS = 600000;                                           // 刷新失�
 //   BLOCK_IP_V6：广告拦截返回 IPv6，默认 ::
 //   ADBLOCK_ENABLED：是否启用域名拦截，默认 true
 //   ANSWER_TTL / BLOCK_TTL：自定义解析与拦截应答的 TTL (秒)
-//   ECS_PREFIX_V4 / ECS_PREFIX_V6：ECS 默认掩码前缀，设 0 表示不注入
+//   ECS_PREFIX_V4 / ECS_PREFIX_V6：ECS 默认掩码前缀，设 0 表示不注入；ECS_PREFIX 只覆盖 IPv4
 //   DOH_URL / DOH_FALLBACKS：上游 DoH 与备用上游，逗号分隔
 //   UPDATE_INTERVAL / UPSTREAM_TIMEOUT / BOOT_WAIT：刷新间隔、上游超时、冷启动等待 (毫秒)
 //   TRUST_XFF：是否信任 X-Forwarded-For，默认 false
@@ -45,6 +45,10 @@ const TYPE_AAAA = 28;
 const TYPE_OPT = 41;
 const CLASS_IN = 1;
 const RCODE_SERVFAIL = 2;
+const TYPE_BY_NAME = {
+  A: 1, NS: 2, CNAME: 5, SOA: 6, PTR: 12, MX: 15, TXT: 16, AAAA: 28, SRV: 33,
+  NAPTR: 35, DS: 43, SSHFP: 44, TLSA: 52, SVCB: 64, HTTPS: 65, CAA: 257, ANY: 255,
+};
 
 export default {
   fetch: (request, env, ctx) => handleRequest(request, env, ctx),
@@ -69,9 +73,18 @@ async function handleRequest(request, env, ctx) {
 
   if (url.pathname !== cfg.dnsPath) return serveStatic(e, request);
 
-  if (method === 'OPTIONS') {
+  // 只有真正的 CORS 预检才回 204，裸 OPTIONS 与普通路径一样
+  if (method === 'OPTIONS' && request.headers.get('access-control-request-method')) {
     return new Response(null, { status: 204, headers: { ...corsHeaders(), 'access-control-max-age': '86400' } });
   }
+
+  // 不带 DNS 语义的请求一律当普通路径处理，暴露不了这里有 DoH 服务
+  const accept = (request.headers.get('accept') || '').toLowerCase();
+  const contentType = (request.headers.get('content-type') || '').toLowerCase();
+  const wantsDns = url.searchParams.has('dns') || url.searchParams.has('name')
+    || accept.includes('application/dns-message') || accept.includes('application/dns-json')
+    || (method === 'POST' && contentType.startsWith('application/dns-message'));
+  if (!wantsDns) return serveStatic(e, request);
 
   const safeCtx = ctx && typeof ctx.waitUntil === 'function'
     ? ctx
@@ -81,7 +94,7 @@ async function handleRequest(request, env, ctx) {
   safeCtx.waitUntil(maintenance(e, safeCtx).catch(err => console.warn('[maintain]', err && err.message)));
 
   try {
-    if (method === 'POST' && (request.headers.get('content-type') || '').toLowerCase().startsWith('application/dns-message')) {
+    if (method === 'POST' && contentType.startsWith('application/dns-message')) {
       return await handleWirePost(request, url, e, cfg, rules);
     }
     if (method === 'GET' && url.searchParams.has('dns')) {
@@ -129,14 +142,15 @@ function resolveConfig(env) {
     dnsPath: String(opt(env, 'DNS_PATH', DNS_PATH)),
     ecs: optBool(env, 'ECS_ENABLED', ECS_ENABLED),
     prefixV4: shared >= 0 ? Math.min(shared, 32) : optInt(env, 'ECS_PREFIX_V4', ECS_PREFIX_V4, 0, 32),
-    prefixV6: shared >= 0 ? Math.min(shared, 128) : optInt(env, 'ECS_PREFIX_V6', ECS_PREFIX_V6, 0, 128),
+    prefixV6: optInt(env, 'ECS_PREFIX_V6', ECS_PREFIX_V6, 0, 128),
     blockIp: String(opt(env, 'BLOCK_IP', BLOCK_IP)),
     blockIpV6: String(opt(env, 'BLOCK_IP_V6', BLOCK_IP_V6)),
     answerTtl: optInt(env, 'ANSWER_TTL', ANSWER_TTL, 0, 604800),
     blockTtl: optInt(env, 'BLOCK_TTL', BLOCK_TTL, 0, 604800),
     upstreamTimeout: optInt(env, 'UPSTREAM_TIMEOUT', UPSTREAM_TIMEOUT, 200, 25000),
     maxBody: optInt(env, 'MAX_BODY', MAX_BODY, 512, 65535),
-    trustXff: optBool(env, 'TRUST_XFF', true),
+    trustXff: optBool(env, 'TRUST_XFF', false),
+    adblock: optBool(env, 'ADBLOCK_ENABLED', true),
   };
 }
 
@@ -924,10 +938,14 @@ function badRequest(message) {
 }
 
 function servfail(msg) {
-  const out = new Uint8Array(12);
+  // 严格实现的客户端会按 question 匹配应答，缺了会当成超时丢掉
+  const questionLen = msg && msg.ok && msg.questionEnd > 12 ? msg.questionEnd - 12 : 0;
+  const out = new Uint8Array(12 + questionLen);
+  if (questionLen) out.set(msg.bytes.subarray(12, msg.questionEnd), 12);
   const view = new DataView(out.buffer);
   view.setUint16(0, msg ? msg.id : 0);
-  view.setUint16(2, 0x8000 | 0x0080 | RCODE_SERVFAIL);
+  view.setUint16(2, 0x8000 | (msg ? msg.flags & 0x7910 : 0) | 0x0080 | RCODE_SERVFAIL);
+  view.setUint16(4, questionLen ? 1 : 0);
   return new Response(out, {
     status: 200,
     headers: { ...wireHeaders(), 'cache-control': 'no-store', 'x-doh': 'error' },
@@ -991,6 +1009,17 @@ function jsonAnswer(decision, cfg) {
   });
 }
 
+// JSON 通道的 type 既接受数字也接受 A/AAAA/MX 这类写法，非法值退回 A
+function resolveType(raw) {
+  if (raw === null || raw === undefined || raw === '') return TYPE_A;
+  const value = String(raw).trim().toUpperCase();
+  if (/^\d+$/.test(value)) {
+    const code = Number(value);
+    return code <= 65535 ? code : TYPE_A;
+  }
+  return TYPE_BY_NAME[value] || TYPE_A;
+}
+
 function normalizeName(name) {
   if (!name) return '';
   let s = String(name).trim().toLowerCase();
@@ -1014,7 +1043,7 @@ function localDecision(env, cfg, question, rules) {
     return null;
   }
 
-  if (decide(name, rules) === 'block') {
+  if (cfg.adblock && decide(name, rules) === 'block') {
     let ip = null;
     if (question.type === TYPE_A) {
       const parsed = parseIp(cfg.blockIp);
@@ -1150,8 +1179,8 @@ async function handleWireGet(request, url, env, cfg, rules) {
 
 async function handleJsonGet(request, url, env, cfg, rules) {
   const nameParam = url.searchParams.get('name');
-  let type = Number(url.searchParams.get('type') || '1');
-  if (!Number.isInteger(type) || type < 0 || type > 65535) type = TYPE_A;
+  const type = resolveType(url.searchParams.get('type'));
+  if (!nameParam) return badRequest('missing name parameter');
 
   if (nameParam) {
     const question = { name: normalizeName(nameParam), type, cls: CLASS_IN };
